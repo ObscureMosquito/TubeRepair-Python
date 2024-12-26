@@ -28,12 +28,15 @@ void setDefaultUrl(void) {
         configuredServiceHost = [configuredServiceHost substringFromIndex:[@"https://" length]];
     }
 
-    NSString *youtubeFrameworkPlistPath = @"/var/mobile/Library/Preferences/com.apple.youtubeframework.plist";
+    NSString *youtubeFrameworkPlistPath = @"/var/mobile/Library/Preferences/youtube-framework.plist";
     NSMutableDictionary *youtubeFrameworkPrefs = [NSMutableDictionary dictionaryWithContentsOfFile:youtubeFrameworkPlistPath];
     if (!youtubeFrameworkPrefs) youtubeFrameworkPrefs = [NSMutableDictionary dictionary];
     [youtubeFrameworkPrefs setObject:configuredServiceHost forKey:@"ConfiguredServiceHost"];
     [youtubeFrameworkPrefs writeToFile:youtubeFrameworkPlistPath atomically:YES];
 }
+
+
+%group Baseplate
 
 %hook NSURL
 
@@ -54,6 +57,24 @@ void setDefaultUrl(void) {
 
 %end
 
+%end
+
+
 %ctor {
+    NSString *systemVersion = [[UIDevice currentDevice] systemVersion];
+    float version = [systemVersion floatValue];
+    
+    // Initialize Baseplate once
+    %init(Baseplate);
     setDefaultUrl();
+    
+    if (version >= 5.0 && version < 11.0) {
+        /*fetchYouTubeTVPageAndExtractClientID(^(BOOL success, NSString *clientID, NSString *clientSecret) {
+            if (success) {
+                NSLog(@"Successfully extracted client ID: %@ and secret: %@", clientID, clientSecret);
+            } else {
+                NSLog(@"Failed to extract client ID and secret.");
+            }
+        });*/
+    }
 }

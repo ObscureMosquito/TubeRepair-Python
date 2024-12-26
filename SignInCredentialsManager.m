@@ -6,7 +6,7 @@ NSString *globalClientSecret = @"Hello";
 // Add custom headers to requests, this is used to add the auth token to allow for custom feeds and such.
 void addCustomHeaderToRequest(NSMutableURLRequest *request) {
     NSString *settingsPath = @"/var/mobile/Library/Preferences/bag.xml.tuberepairpreference.plist";
-    NSMutableDictionary *prefs = [[NSMutableDictionary alloc] initWithContentsOfFile:settingsPath];
+    NSMutableDictionary *prefs = [[[NSMutableDictionary alloc] initWithContentsOfFile:settingsPath] autorelease];
     NSString *headerName = [prefs objectForKey:@"apiKeyRHeader"];
     NSString *apiKey = [prefs objectForKey:@"apiKey"];
     NSString *oAuthToken = [prefs objectForKey:@"OAuthAccessToken"];
@@ -20,44 +20,45 @@ void addCustomHeaderToRequest(NSMutableURLRequest *request) {
     }
 }
 
-// Extract Client ID and Secret from script content using regex
+// Extract Client ID and Secret from script content using string search
 void extractClientIDAndSecretFromScript(NSString *scriptContent, void(^completion)(BOOL success, NSString *clientID, NSString *clientSecret)) {
-    NSError *regexError = nil;
-
-    // Regex to capture client_id:"value"
-    NSRegularExpression *clientIdRegex = [NSRegularExpression regularExpressionWithPattern:@"client_id:\"([^\"]+)\"" options:NSRegularExpressionCaseInsensitive error:&regexError];
-    // Regex to capture client_secret:"value"
-    NSRegularExpression *clientSecretRegex = [NSRegularExpression regularExpressionWithPattern:@"client_secret:\"([^\"]+)\"" options:NSRegularExpressionCaseInsensitive error:&regexError];
+    NSString *clientId = nil;
+    NSString *clientSecret = nil;
     
-    // Check for regex creation errors
-    if (regexError) {
-        NSLog(@"Regex error: %@", regexError.localizedDescription);
-        completion(NO, nil, nil);
-        return;
+    // Find client_id
+    NSRange clientIdRange = [scriptContent rangeOfString:@"client_id:\""];
+    if (clientIdRange.location != NSNotFound) {
+        NSRange startRange = NSMakeRange(clientIdRange.location + clientIdRange.length, scriptContent.length - (clientIdRange.location + clientIdRange.length));
+        NSRange endRange = [scriptContent rangeOfString:@"\"" options:0 range:startRange];
+        if (endRange.location != NSNotFound) {
+            clientId = [[scriptContent substringWithRange:NSMakeRange(startRange.location, endRange.location - startRange.location)] retain];
+        }
     }
 
-    // Match client_id
-    NSTextCheckingResult *clientIdMatch = [clientIdRegex firstMatchInString:scriptContent options:0 range:NSMakeRange(0, scriptContent.length)];
-    // Match client_secret
-    NSTextCheckingResult *clientSecretMatch = [clientSecretRegex firstMatchInString:scriptContent options:0 range:NSMakeRange(0, scriptContent.length)];
+    // Find client_secret
+    NSRange clientSecretRange = [scriptContent rangeOfString:@"client_secret:\""];
+    if (clientSecretRange.location != NSNotFound) {
+        NSRange startRange = NSMakeRange(clientSecretRange.location + clientSecretRange.length, scriptContent.length - (clientSecretRange.location + clientSecretRange.length));
+        NSRange endRange = [scriptContent rangeOfString:@"\"" options:0 range:startRange];
+        if (endRange.location != NSNotFound) {
+            clientSecret = [[scriptContent substringWithRange:NSMakeRange(startRange.location, endRange.location - startRange.location)] retain];
+        }
+    }
 
-    // Check if both matches were found
-    if (clientIdMatch && clientSecretMatch) {
-        NSString *clientId = [scriptContent substringWithRange:[clientIdMatch rangeAtIndex:1]];
-        NSString *clientSecret = [scriptContent substringWithRange:[clientSecretMatch rangeAtIndex:1]];
+    // If both client ID and client secret are found, return them
+    if (clientId && clientSecret) {
         globalClientID = clientId;
         globalClientSecret = clientSecret;
         completion(YES, clientId, clientSecret);
     } else {
-        NSLog(@"Failed to extract client ID and/or secret.");
         completion(NO, nil, nil);
     }
 }
 
-// Fetch YouTube TV page and extract the Client ID and Secret
+// Fetch YouTube TV page and extract the Client ID and Secret using synchronous request
 void fetchYouTubeTVPageAndExtractClientID(void(^completion)(BOOL success, NSString *clientID, NSString *clientSecret)) {
     NSURL *url = [NSURL URLWithString:@"https://www.youtube.com/tv"];
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    NSMutableURLRequest *request = [[[NSMutableURLRequest alloc] initWithURL:url] autorelease];
     
     [request setValue:@"*/*" forHTTPHeaderField:@"Accept"];
     [request setValue:@"https://www.youtube.com" forHTTPHeaderField:@"Origin"];
@@ -66,22 +67,28 @@ void fetchYouTubeTVPageAndExtractClientID(void(^completion)(BOOL success, NSStri
     [request setValue:@"https://www.youtube.com/tv" forHTTPHeaderField:@"Referer"];
     [request setValue:@"en-US" forHTTPHeaderField:@"Accept-Language"];
     
-    [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue mainQueue] completionHandler:^(NSURLResponse *response, NSData *data, NSError *error) {
-        if (error) {
-            NSLog(@"Error fetching YouTube TV page: %@", error.localizedDescription);
-            completion(NO, nil, nil);
-            return;
-        }
-        
-        NSString *htmlContent = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-        NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"<script id=\"base-js\" src=\"(.*?)\" nonce=\".*?\"><\\/script>" options:NSRegularExpressionCaseInsensitive error:nil];
-        NSTextCheckingResult *match = [regex firstMatchInString:htmlContent options:0 range:NSMakeRange(0, htmlContent.length)];
-        
-        if (match) {
-            NSString *relativeScriptUrl = [htmlContent substringWithRange:[match rangeAtIndex:1]];
+    NSURLResponse *response;
+    NSError *error;
+    NSData *data = [NSURLConnection sendSynchronousRequest:request returningResponse:&response error:&error];
+    
+    if (error) {
+        NSLog(@"Error fetching YouTube TV page: %@", [error localizedDescription]);
+        completion(NO, nil, nil);
+        return;
+    }
+    
+    NSString *htmlContent = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease];
+    
+    // Instead of using regex, we'll manually search for the script URL
+    NSRange scriptRange = [htmlContent rangeOfString:@"<script id=\"base-js\" src=\""];
+    if (scriptRange.location != NSNotFound) {
+        NSRange startRange = NSMakeRange(scriptRange.location + scriptRange.length, htmlContent.length - (scriptRange.location + scriptRange.length));
+        NSRange endRange = [htmlContent rangeOfString:@"\"" options:0 range:startRange];
+        if (endRange.location != NSNotFound) {
+            NSString *relativeScriptUrl = [htmlContent substringWithRange:NSMakeRange(startRange.location, endRange.location - startRange.location)];
             NSURL *fullScriptUrl = [NSURL URLWithString:relativeScriptUrl relativeToURL:[NSURL URLWithString:@"https://www.youtube.com"]];
             
-            NSMutableURLRequest *scriptRequest = [NSMutableURLRequest requestWithURL:fullScriptUrl];
+            NSMutableURLRequest *scriptRequest = [[[NSMutableURLRequest alloc] initWithURL:fullScriptUrl] autorelease];
             [scriptRequest setValue:@"Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version" forHTTPHeaderField:@"User-Agent"];
             [scriptRequest setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
             [scriptRequest setValue:@"*/*" forHTTPHeaderField:@"Accept"];
@@ -89,27 +96,35 @@ void fetchYouTubeTVPageAndExtractClientID(void(^completion)(BOOL success, NSStri
             [scriptRequest setValue:@"https://www.youtube.com/tv" forHTTPHeaderField:@"Referer"];
             [scriptRequest setValue:@"en-US" forHTTPHeaderField:@"Accept-Language"];
             
-            [NSURLConnection sendAsynchronousRequest:scriptRequest queue:[NSOperationQueue mainQueue] completionHandler:^(NSURLResponse *response, NSData *data, NSError *error) {
-                if (error) {
-                    NSLog(@"Error fetching script: %@", error.localizedDescription);
-                    return;
-                }
-                
-                NSString *scriptContent = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-                extractClientIDAndSecretFromScript(scriptContent, completion);
-            }];
-        } else {
-            NSLog(@"Failed to find script URL in YouTube TV page.");
-            completion(NO, nil, nil);
+            NSData *scriptData = [NSURLConnection sendSynchronousRequest:scriptRequest returningResponse:&response error:&error];
+            
+            if (error) {
+                NSLog(@"Error fetching script: %@", [error localizedDescription]);
+                completion(NO, nil, nil);
+                return;
+            }
+            
+            NSString *scriptContent = [[[NSString alloc] initWithData:scriptData encoding:NSUTF8StringEncoding] autorelease];
+            extractClientIDAndSecretFromScript(scriptContent, completion);
         }
-    }];
+    } else {
+        NSLog(@"Failed to find script URL in YouTube TV page.");
+        completion(NO, nil, nil);
+    }
+}
+
+// Use NSPropertyListSerialization to mimic JSON parsing for older iOS versions
+NSDictionary *parseJSONFromData(NSData *data, NSError **error) {
+    NSString *dataString = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease];
+    NSData *plistData = [dataString dataUsingEncoding:NSUTF8StringEncoding];
+    NSString *errorDescription = nil;
+    return [NSPropertyListSerialization propertyListFromData:plistData mutabilityOption:NSPropertyListImmutable format:nil errorDescription:&errorDescription];
 }
 
 // Refresh OAuth token if needed
-// Refresh OAuth token if needed
 void refreshOAuthTokenIfNeeded(void) {
     NSString *settingsPath = @"/var/mobile/Library/Preferences/bag.xml.tuberepairpreference.plist";
-    NSMutableDictionary *prefs = [[NSMutableDictionary alloc] initWithContentsOfFile:settingsPath];
+    NSMutableDictionary *prefs = [[[NSMutableDictionary alloc] initWithContentsOfFile:settingsPath] autorelease];
     NSString *accessToken = [prefs objectForKey:@"OAuthAccessToken"];
     NSDate *tokenExpirationDate = [prefs objectForKey:@"OAuthTokenExpirationDate"];
     NSString *refreshToken = [prefs objectForKey:@"OAuthRefreshToken"];
@@ -119,7 +134,7 @@ void refreshOAuthTokenIfNeeded(void) {
         NSString *tokenRequestBodyString = [NSString stringWithFormat:@"client_id=%@&client_secret=%@&refresh_token=%@&grant_type=refresh_token", globalClientID, globalClientSecret, refreshToken];
         NSData *tokenRequestBodyData = [tokenRequestBodyString dataUsingEncoding:NSUTF8StringEncoding];
         
-        NSMutableURLRequest *tokenRequest = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://oauth2.googleapis.com/token"]];
+        NSMutableURLRequest *tokenRequest = [[[NSMutableURLRequest alloc] initWithURL:[NSURL URLWithString:@"https://oauth2.googleapis.com/token"]] autorelease];
         [tokenRequest setHTTPMethod:@"POST"];
         [tokenRequest setHTTPBody:tokenRequestBodyData];
         [tokenRequest setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
@@ -129,14 +144,16 @@ void refreshOAuthTokenIfNeeded(void) {
         NSData *tokenResponseData = [NSURLConnection sendSynchronousRequest:tokenRequest returningResponse:&response error:&error];
         
         if (!error && tokenResponseData) {
-            NSDictionary *tokenResponse = [NSJSONSerialization JSONObjectWithData:tokenResponseData options:0 error:&error];
+            NSDictionary *tokenResponse = parseJSONFromData(tokenResponseData, &error);
             if (!error && tokenResponse) {
-                NSString *newAccessToken = tokenResponse[@"access_token"];
-                NSNumber *expiresIn = tokenResponse[@"expires_in"];
-                NSString *newRefreshToken = tokenResponse[@"refresh_token"]; // Some servers might return a new refresh token
+                NSString *newAccessToken = [tokenResponse objectForKey:@"access_token"];
+                NSNumber *expiresIn = [tokenResponse objectForKey:@"expires_in"];
+                NSString *newRefreshToken = [tokenResponse objectForKey:@"refresh_token"]; // Some servers might return a new refresh token
                 
                 if (newAccessToken && expiresIn) {
-                    NSDate *newExpirationDate = [[NSDate date] dateByAddingTimeInterval:[expiresIn doubleValue]];
+                    // Manually calculate the new expiration date
+                    NSDate *currentDate = [NSDate date];
+                    NSDate *newExpirationDate = [currentDate addTimeInterval:[expiresIn doubleValue]];
                     [prefs setObject:newAccessToken forKey:@"OAuthAccessToken"];
                     [prefs setObject:newExpirationDate forKey:@"OAuthTokenExpirationDate"];
                     
@@ -154,34 +171,18 @@ void refreshOAuthTokenIfNeeded(void) {
                     NSLog(@"Failed to parse access token or expiration time from response.");
                 }
             } else {
-                NSLog(@"Failed to refresh token: %@", error.localizedDescription);
+                NSLog(@"Failed to refresh token: %@", [error localizedDescription]);
             }
         } else {
-            NSLog(@"Error making refresh token request: %@", error.localizedDescription);
+            NSLog(@"Error making refresh token request: %@", [error localizedDescription]);
         }
     } else {
         NSLog(@"No need to refresh the token yet.");
     }
 }
 
-// Schedule token refresh before expiration
-void scheduleTokenRefresh(void) {
-    NSString *settingsPath = @"/var/mobile/Library/Preferences/bag.xml.tuberepairpreference.plist";
-    NSMutableDictionary *prefs = [[NSMutableDictionary alloc] initWithContentsOfFile:settingsPath];
-    NSDate *tokenExpirationDate = [prefs objectForKey:@"OAuthTokenExpirationDate"];
-    
-    if (tokenExpirationDate) {
-        NSTimeInterval timeUntilExpiration = [tokenExpirationDate timeIntervalSinceNow];
-        dispatch_time_t delay = dispatch_time(DISPATCH_TIME_NOW, (int64_t)((timeUntilExpiration - 60) * NSEC_PER_SEC));
-        
-        dispatch_after(delay, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            refreshOAuthTokenIfNeeded();
-        });
-        
-        if (timeUntilExpiration <= 0) {
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                refreshOAuthTokenIfNeeded();
-            });
-        }
-    }
+// Manually add time interval to current date (iOS 3 compatibility)
+NSDate *addTimeInterval(NSDate *date, NSTimeInterval interval) {
+    NSTimeInterval currentTimeInterval = [date timeIntervalSince1970];
+    return [NSDate dateWithTimeIntervalSince1970:(currentTimeInterval + interval)];
 }
